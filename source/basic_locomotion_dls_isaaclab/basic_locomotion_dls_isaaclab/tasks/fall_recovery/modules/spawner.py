@@ -247,33 +247,3 @@ class QuadrupedSpawner:
         if joint_pos is not None:
             jp = joint_pos.to(device=self.device, dtype=jp.dtype)
         return root, jp, jv
-
-    # def randomize(
-    #     self,
-    #     env_ids: torch.Tensor,
-    #     pos_jitter: float | None = None,
-    #     yaw_only: bool | None = None,
-    #     joint_noise: float | None = None,
-    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    #     root, jp, jv = self._defaults(env_ids)
-    #     n = len(env_ids)
-    #     root[:, :3] = self.env_origins[env_ids]
-    #     pj = self.params.pos_jitter if pos_jitter is None else pos_jitter
-    #     if pj and pj > 0.0:
-    #         root[:, 0] += pj * (torch.rand(n, device=self.device) - 0.5)
-    #         root[:, 1] += pj * (torch.rand(n, device=self.device) - 0.5)
-    #     yo = self.params.yaw_only if yaw_only is None else yaw_only
-    #     if yo:
-    #         yr = self.params.yaw_range
-    #         yaw = 2 * yr * torch.rand(n, device=self.device) - yr
-    #         quat = math_utils.quat_from_euler_xyz(torch.zeros(n, device=self.device), torch.zeros(n, device=self.device), yaw)
-    #     else:
-    #         e = (torch.rand(n, 3, device=self.device) - 0.5) * 0.2
-    #         quat = math_utils.quat_from_euler_xyz(e[:, 0], e[:, 1], e[:, 2])
-    #     root[:, 3:7] = quat
-    #     jn = self.params.joint_noise if joint_noise is None else joint_noise
-    #     if jn and jn > 0.0:
-    #         jp = jp + jn * torch.randn_like(jp)
-    #     return root, jp, jv
-
-

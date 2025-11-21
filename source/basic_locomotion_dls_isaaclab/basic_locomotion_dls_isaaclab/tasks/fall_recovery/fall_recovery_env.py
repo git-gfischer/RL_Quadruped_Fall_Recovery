@@ -9,26 +9,13 @@ import gymnasium as gym
 import torch
 import os
 
-import isaaclab.envs.mdp as mdp
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCaster, RayCasterCfg, patterns, Imu
-from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.utils import configclass
+from isaaclab.assets import Articulation
+from isaaclab.envs import DirectRLEnv
+from isaaclab.sensors import ContactSensor, RayCaster, Imu
 
-
-from .aliengo_env_cfg import AliengoFlatEnvCfg, AliengoRoughBlindEnvCfg, AliengoRoughVisionEnvCfg
-from .go2_env_cfg import Go2FlatEnvCfg, Go2RoughVisionEnvCfg, Go2RoughBlindEnvCfg
-from .hyqreal_env_cfg import HyQRealFlatEnvCfg, HyQRealRoughVisionEnvCfg, HyQRealRoughBlindEnvCfg
-from .b2_env_cfg import B2FlatEnvCfg, B2RoughVisionEnvCfg, B2RoughBlindEnvCfg
-
-#from basic_locomotion_dls_isaaclab.tasks.supervised_learning_networks import SimpleNN
+from .aliengo_env_cfg import AliengoFlatEnvCfg
 from .modules.mcp import MCP, MCPDims, MCPDataset
 from .modules.spawner import QuadrupedSpawner
 
@@ -41,18 +28,6 @@ class FallRecoveryEnv(DirectRLEnv):
         # Joint position command (deviation from default joint positions)
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
         self._previous_actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
-        self._previous_previous_actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
-
-        self._commands = torch.zeros(self.num_envs, 3, device=self.device)
-
-        
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Observation history
-        if(cfg.use_observation_history == True):
-            self._observation_history = torch.zeros(self.num_envs, cfg.history_length, cfg.single_observation_space, device=self.device)
-        else: 
-            self._observation_history = None
 
         # Logging
         self._episode_sums = {
@@ -82,12 +57,9 @@ class FallRecoveryEnv(DirectRLEnv):
         self._hip_ids, _ = self._contact_sensor.find_bodies(".*hip")
         self._thigh_ids, _ = self._contact_sensor.find_bodies(".*thigh")
         self._calf_ids, _  = self._contact_sensor.find_bodies(".*calf|.*shank")
-        self._foot_ids, _  = self._contact_sensor.find_bodies(".*foot|.*toe") 
         self._undesired_contact_body_ids = self._base_id + self._hip_ids + self._thigh_ids
-        self._prev_gz = torch.full((self.num_envs,), -1.0, device=self.device)
         
-        self._feet_ids_robot, _ = self._robot .find_bodies(".*foot")
-        self._hip_ids_robot, _ = self._robot.find_bodies(".*hip")
+        self._feet_ids_robot, _ = self._robot.find_bodies(".*foot")
 
         # Precompute laying joint pose tensor for action freezing in final phase
         laying_np = torch.tensor(self.cfg.laying_joint_pos, device=self.device)
@@ -103,13 +75,6 @@ class FallRecoveryEnv(DirectRLEnv):
             self._mcp_opt = torch.optim.Adam(self._mcp.parameters(), lr=self.cfg.mcp_lr)
             # [N, H, 42]
             self._o_hist = torch.zeros(self.num_envs, self._mcp_dims.H, self._mcp_dims.o_dim, device=self.device)
-        
-
-        # Caches for "previous step" pairing in the dataset (only used when MCP enabled):
-        # self._last_o_t_for_mcp  = torch.zeros(self.num_envs, self._mcp_dims.o_dim, device=self.device)         # (N, o_dim)
-        # self._last_o_hist_flat  = torch.zeros(self.num_envs, self._mcp_dims.H * self._mcp_dims.o_dim, device=self.device)  # (N, H*o_dim)
-        # self._last_m_true       = torch.zeros(self.num_envs, 4, device=self.device)      # (N,4)
-        # self._last_c_true       = torch.zeros(self.num_envs, 13, device=self.device)     # (N,13)
 
         self.quad_spawner = QuadrupedSpawner(device=self.device, 
                                              env_origins=self._terrain.env_origins, 
@@ -131,11 +96,8 @@ class FallRecoveryEnv(DirectRLEnv):
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
         self.scene.sensors["contact_sensor"] = self._contact_sensor
 
-        # we add a height scanner for perceptive locomotion
         self._height_scanner = RayCaster(self.cfg.height_scanner)
         self.scene.sensors["height_scanner"] = self._height_scanner
-
-        # we add an imu
         self._imu = Imu(self.cfg.imu)
         self.scene.sensors["imu"] = self._imu
 
@@ -143,21 +105,15 @@ class FallRecoveryEnv(DirectRLEnv):
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         
-        # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         
-        # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self._previous_previous_actions = self._previous_actions.clone()
         self._previous_actions = self._actions.clone()
         self._actions = actions.clone()
-        
-        # Clip the action
-        #self._actions = torch.clamp(self._actions, -self.cfg.desired_clip_actions, self.cfg.desired_clip_actions)
 
         # Filter the action
         if(self.cfg.use_filter_actions):
@@ -183,64 +139,13 @@ class FallRecoveryEnv(DirectRLEnv):
         
         # 1) build current proprio o_t (your existing helper)
         o_t = self._build_o_t()  # (N, o_dim)
-
-        # 3) MCP features (handled internally: history update, dataset add, periodic training)
-        use_mcp = getattr(self.cfg, "use_mcp", False)
-        if use_mcp:
-            # predictions from MCP
-            m_pred, c_pred, z_pred = self._get_mcp_features(clock_data=None)  # (N,4),(N,13),(N,z)
-
-            # ground-truth privileged targets (for scheduled mixing)
-            m_true = self._get_true_mass_distribution()  # (N,4)
-            c_true = self._get_true_contact_13()        # (N,13)
-
-            # iteration-based mixing schedule p in [0,1] with validation gate
-            steps_per_ep = int(getattr(self, "max_episode_length", 1)) or 1
-            curr_iter = float(self.common_step_counter) / float(steps_per_ep)
-            start_it = float(getattr(self.cfg, "mcp_pred_start_iter", 2000))
-            end_it   = float(getattr(self.cfg, "mcp_pred_end_iter",   8000))
-            if end_it <= start_it:
-                end_it = start_it + 1.0
-            raw_p = (curr_iter - start_it) / (end_it - start_it)
-            raw_p = torch.clamp(torch.tensor(raw_p, device=self.device), 0.0, 1.0)
-
-            # validation thresholds
-            lc_thr   = float(getattr(self.cfg, "mcp_val_contact_bce_thr", 0.1))
-            lrec_thr = float(getattr(self.cfg, "mcp_val_recon_mse_thr", 0.02))
-            good_req = int(getattr(self.cfg, "mcp_val_good_required", 5))
-            # moving counter of consecutive good validations
-            if not hasattr(self, "_mcp_good_counter"):
-                self._mcp_good_counter = 0
-            # use last logs cached in extras if present
-            lc_val = self.extras.get("log", {}).get("MCP/lc", None) if hasattr(self, "extras") else None
-            lrec_val = self.extras.get("log", {}).get("MCP/lrec", None) if hasattr(self, "extras") else None
-            if isinstance(lc_val, (float, int)) and isinstance(lrec_val, (float, int)):
-                if float(lc_val) <= lc_thr and float(lrec_val) <= lrec_thr:
-                    self._mcp_good_counter = min(self._mcp_good_counter + 1, 1000)
-            else:
-                    self._mcp_good_counter = 0
-            # final p is gated: if not enough good validations, keep p=0
-            p = raw_p if (self._mcp_good_counter >= good_req) else torch.tensor(0.0, device=self.device)
-
-            # mix GT and predictions for actor inputs
-            m_hat = (1.0 - p) * m_true + p * m_pred
-            c_hat = (1.0 - p) * c_true + p * c_pred
-            z_hat = z_pred  # latent used as-is (can also gate if desired)
-        else:
-            # MCP disabled: these variables are not used (commented out for clarity)
-            # z_dim = int(getattr(self.cfg, "mcp_latent_dim", 16))
-            # m_hat = torch.zeros(self.num_envs, 4, device=self.device)
-            # c_hat = torch.zeros(self.num_envs, 13, device=self.device)
-            # z_hat = torch.zeros(self.num_envs, z_dim, device=self.device)
-            pass
-
-        # 4) assemble actor obs (without MCP: only o_t as per FR-Net baseline)
-        obs_policy = o_t  # (N, 42) - proprioceptive observation only
+    
+        # Assemble actor obs
+        obs_policy = o_t
         observations = {"policy": obs_policy}
 
-        # 5) critic obs (privileged) if asymmetric PPO
+        # Critic obs (privileged) if asymmetric PPO
         observations["critic"] = self._get_privileged_observation()
-        #observations["critic"] = self._build_o_t()  # (N, o_dim)
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
@@ -270,11 +175,8 @@ class FallRecoveryEnv(DirectRLEnv):
         """
         dt = self.step_dt
 
-        # ---------- lazy state needed by body-bias ----------
         if not hasattr(self, "_init_root_xy"):
             self._init_root_xy = self._robot.data.root_state_w[:, :2].clone()
-
-        # ---------- signals ----------
         g_b  = self._robot.data.projected_gravity_b             # (N,3)
         q    = self._robot.data.joint_pos                       # (N,J)
         qd   = self._robot.data.joint_vel                       # (N,J)
@@ -321,8 +223,7 @@ class FallRecoveryEnv(DirectRLEnv):
         act_smooth = ((a_t - a_tm1) ** 2).sum(dim=1) # action smoothing squared
         tau_sq = (tau ** 2).sum(dim=1) # joint torque squared
 
-        # ---------- orientation/posture ----------
-        gxy_sq = (g_b[:, :2] ** 2).sum(dim=1)                  # ||g_xy||^2
+        gxy_sq = (g_b[:, :2] ** 2).sum(dim=1)
         gz = g_b[:, 2]
         eps_upright = float(getattr(self.cfg, "upright_eps", 0.10))
         upright = torch.exp(-((gz + 1.0) ** 2) / (2.0 * eps_upright * eps_upright))
@@ -336,7 +237,6 @@ class FallRecoveryEnv(DirectRLEnv):
         self._upright_hold_counter = torch.where(near_upright, self._upright_hold_counter + 1, torch.zeros_like(self._upright_hold_counter))
         stance_phase = self._upright_hold_counter >= hold_upright_steps
 
-        #q_stand = torch.tensor(self.cfg.stand_joint_pos, device=self.device)
         q_laying = torch.tensor(self.cfg.laying_joint_pos, device=self.device)
         posture_err_sq = ((q - q_laying) ** 2).sum(dim=1)
         
@@ -385,7 +285,6 @@ class FallRecoveryEnv(DirectRLEnv):
         # Height reward removed — final pose driven by joint alignment and stillness
         current_height = self._robot.data.root_state_w[:, 2]
         target_height_low = getattr(self.cfg, "target_height_low", 0.15)
-        height_error_low = torch.abs(current_height - target_height_low)
 
         # Phase 4: final stillness (no motion once pose achieved)
         if not hasattr(self, "_final_hold_counter") or self._final_hold_counter.shape[0] != self.num_envs:
@@ -411,8 +310,6 @@ class FallRecoveryEnv(DirectRLEnv):
         # Strong orientation reward - heavily penalize any deviation from upright
         orientation_penalty = torch.abs(g_b[:, 2] + 1.0)  # 0 when perfectly upright (g_z = -1), increases with deviation
 
-        # ---------- stance-related signals ----------
-        # safe lazy init for stance flag
         if not hasattr(self, "_ever_reached_target") or self._ever_reached_target.shape[0] != self.num_envs:
             self._ever_reached_target = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
@@ -431,9 +328,7 @@ class FallRecoveryEnv(DirectRLEnv):
         self._stance_counter = torch.where(stance_ok, self._stance_counter + 1, torch.zeros_like(self._stance_counter))
         stance_held = self._stance_counter >= hold_steps
         newly_stanced = stance_held & (~self._ever_reached_target)
-        # update latch when held long enough
-        #self._ever_reached_target |= stance_held
-        
+
         # Refinement phase: after robot has been stably standing for a while
         if not hasattr(self, "_refinement_counter") or self._refinement_counter.shape[0] != self.num_envs:
             self._refinement_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -455,13 +350,10 @@ class FallRecoveryEnv(DirectRLEnv):
 
         # Torso/limb contacts (body awareness)
         contact_13 = self._get_true_contact_13()
-        base_contact = contact_13[:, 0]
         hip_contact = contact_13[:, [1, 4, 7, 10]].max(dim=1).values
         thigh_contact = contact_13[:, [2, 5, 8, 11]].max(dim=1).values
         torso_obstruction = (hip_contact + thigh_contact) * (phase1_active.float() + phase2_active.float())
-        belly_contact = base_contact * phase3_active.float()  # desired in final pose
 
-        # ---------- weights (focused on orientation) ----------
         w = dict(
             base_orient=-0.5,
             upright=15.0,  # Much stronger - this is the main goal
@@ -482,7 +374,6 @@ class FallRecoveryEnv(DirectRLEnv):
             orientation_penalty=-8.0,  # Strong penalty for any deviation from upright
             contact_belly_upright=0.0,  # No penalty - we want belly on ground for laying down
             torso_obstruction=-6.0,  # Penalize hips/thighs colliding before final pose
-            belly_contact_reward=1.0,  # Encourage belly contact once in final pose
             stance_bonus=25.0,  # bigger one-shot bonus on sustained stance
             hip_spread_penalty=-10.0,  # Strongly discourage wide leg spread when upright (increased)
             feet_off_ground_penalty=-8.0,  # Strongly discourage feet off ground in stance
@@ -499,24 +390,21 @@ class FallRecoveryEnv(DirectRLEnv):
             tau_sq=-1.0e-4,  # Minimal - allow high torques
         )
 
-        # ---------- assemble rewards ----------
         rewards = {
-            # Orientation / Posture (FOCUSED ON UPRIGHT)
             "r_orient_base_gxy":       w["base_orient"]   * gxy_sq * dt,
             "r_orient_upright":        w["upright"]       * upright * dt,
-            # Phased rewards: 1) Calves, 2) Upright, 3) Full pose
-            "r_calf_reward":           w["calf_reward"]   * calf_reward * dt,  # Phase 1: Contract calves
+            "r_calf_reward":           w["calf_reward"]   * calf_reward * dt,
             "r_calf_fl_reward":       w["fl_calf_reward"] * fl_calf_reward * dt,
             "r_calf_fr_reward":       w["fr_calf_reward"] * fr_calf_reward * dt,
             "r_fr_leg_reward":        w["fr_leg_reward"] * fr_leg_reward * dt,
-            "r_calf_penalty":          w["calf_penalty"]  * calf_penalty * dt,  # Penalize calves drifting from pose
+            "r_calf_penalty":          w["calf_penalty"]  * calf_penalty * dt,
             "r_front_calf_penalty":    w["front_calf_penalty"] * front_calf_penalty * dt,
             "r_rear_calf_penalty":     w["rear_calf_penalty"] * rear_calf_penalty * dt,
             "r_fr_leg_penalty":        w["fr_leg_penalty"] * fr_leg_penalty * dt,
             "r_final_stillness":       w["final_stillness"] * final_stillness_penalty * dt,
             "r_final_stillness_reward": w["final_stillness_reward"] * final_stillness_reward * dt,
-            "r_upright_phase2":        w["upright_phase2"] * upright_phase2 * dt,  # Phase 2: Get upright after calves
-            "r_orient_target_posture": w["target_posture"]* target_posture * dt,  # Phase 3: Full laying down pose
+            "r_upright_phase2":        w["upright_phase2"] * upright_phase2 * dt,
+            "r_orient_target_posture": w["target_posture"]* target_posture * dt,
             "r_upside_down_penalty":   w["upside_down_penalty"] * upside_down_penalty * dt,
             "r_orientation_penalty":   w["orientation_penalty"] * orientation_penalty * dt,
             "r_contact_belly_upright": w["contact_belly_upright"] * belly_contact_upright * dt,
@@ -524,19 +412,11 @@ class FallRecoveryEnv(DirectRLEnv):
             "r_hip_spread_penalty":    w["hip_spread_penalty"] * hip_spread_penalty * dt,
             "r_feet_off_ground_penalty": w["feet_off_ground_penalty"] * feet_off_ground_penalty * dt,
             "r_refinement_posture":    w["refinement_posture"] * refinement_posture * dt,
-            
-            # Recovery Progress
             "r_recovery_progress":     w["recovery_progress"] * recovery_progress * dt,
-
-            # Contact Management
             "r_contact_feet":          w["feet_contact"]  * feet_contact * dt,
             "r_contact_body":          w["body_contact"]  * body_contact * dt,
-
-            # Stability Control
             "r_stability_safety_force":w["safety_force"]  * safety_force * dt,
             "r_stability_body_bias":   w["body_bias"]     * body_bias * dt,
-
-            # Motion Constraints
             "r_motion_pos_limits":     w["pos_limits"]    * pos_limit_term * dt,
             "r_motion_ang_vel_limit":  w["ang_vel_limit"] * qd_excess * dt,
             "r_motion_joint_acc":      w["qdd_sq"]        * qdd_sq * dt,
@@ -545,37 +425,27 @@ class FallRecoveryEnv(DirectRLEnv):
             "r_motion_torque":         w["tau_sq"]        * tau_sq * dt,
         }
 
-        # ---------- sum ----------
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
-        # ---------- logging (safe) ----------
+        # Logging
         if not hasattr(self, "_episode_sums"):
             self._episode_sums = {}
         for k, v in rewards.items():
-            # filter by allowlist to reduce logging noise
             if (self._log_metric_keys is None) or (k in self._log_metric_keys):
                 buf = self._episode_sums.get(k)
             if buf is None or buf.shape[0] != self.num_envs or buf.device != self.device:
                 self._episode_sums[k] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             self._episode_sums[k] += v
-        # accumulate total return
         if not hasattr(self, "_episode_return") or self._episode_return.shape[0] != self.num_envs:
             self._episode_return = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self._episode_return += reward
-        #------------------------------------------------
 
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Simple time-based termination only.
-        """
-        # ---------------- Time-out only ----------------
+        """Simple time-based termination only."""
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-
-        # No early termination - only time out
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
         return died, time_out
 
     
@@ -585,38 +455,23 @@ class FallRecoveryEnv(DirectRLEnv):
 
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
-        if len(env_ids) == self.num_envs:
+        if env_ids is not None and len(env_ids) == self.num_envs:
             # Spread resets
             self.episode_length_buf[:] = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         # Clear action memory
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
-        self._previous_previous_actions[env_ids] = 0.0
 
-        # ---------- Spawn state (pose + joints) ----------
+        # Spawn state (pose + joints)
         use_good_pose = bool(getattr(self.cfg, "use_good_pose_reset", False))
-
-        # Base state buffers (simplified - start from defaults)
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
 
-        if use_good_pose:    
+        if use_good_pose:
             root, jp, jv = self.quad_spawner.spawn_layingdown(env_ids)
-        else:  # ---------- Bad pose: upside-down or tumbled ----------
-            root,jp,jv = self.quad_spawner.spawn_bad_pose(env_ids)
+        else:
+            root, jp, jv = self.quad_spawner.spawn_bad_pose(env_ids)
 
-        
-        # Optional: Clamp to joint limits to prevent invalid poses
-        # Commented out for simplicity - uncomment if you need strict joint limit enforcement
-        # limits = getattr(self._robot.data, "joint_pos_limits", None)
-        # if limits is not None:
-        #     limits = torch.as_tensor(limits, device=self.device, dtype=jp.dtype)
-        #     if limits.dim() == 2:
-        #         limits = limits.unsqueeze(0).expand(n, -1, -1)
-        #     lower, upper = limits[:, :, 0], limits[:, :, 1]
-        #     jp = torch.clamp(jp, lower + 1e-4, upper - 1e-4)
-
-        
         default_root_state[:, :7] = root[:, :7]
         default_root_state[:, 7:] = 0.0
 
@@ -627,22 +482,13 @@ class FallRecoveryEnv(DirectRLEnv):
 
         # Reset MCP caches (only when MCP enabled)
         if self.cfg.use_mcp:
-            self._o_hist[env_ids]          = 0.0
-            # self._last_o_t_for_mcp[env_ids]= 0.0  # commented: unused when MCP disabled
-            # self._last_o_hist_flat[env_ids]= 0.0  # commented: unused when MCP disabled
-            # self._last_m_true[env_ids]     = 0.0  # commented: unused when MCP disabled
-            # self._last_c_true[env_ids]     = 0.0  # commented: unused when MCP disabled
+            self._o_hist[env_ids] = 0.0
 
-        # Also reset reference point for body-bias term (used in rewards)
+        # Reset reference point for body-bias term (used in rewards)
         if hasattr(self, "_init_root_xy"):
             self._init_root_xy[env_ids] = default_root_state[:, :2]
-        
-        if hasattr(self, "_prev_gz"):
-            self._prev_gz[env_ids] = -1.0
 
-        # Reset stuck detection and target tracking flags
-        if hasattr(self, "_stuck_counter"):
-            self._stuck_counter[env_ids] = 0
+        # Reset target tracking flags
         if hasattr(self, "_ever_reached_target"):
             self._ever_reached_target[env_ids] = False
         if hasattr(self, "_final_hold_counter"):
@@ -650,15 +496,13 @@ class FallRecoveryEnv(DirectRLEnv):
         if hasattr(self, "_phase4_mask"):
             self._phase4_mask[env_ids] = False
 
-        # ---------- Logging (filtered) ----------
+        # Logging (filtered)
         extras = dict()
-        # Only emit allowlisted metrics
         keys_to_log = [k for k in self._episode_sums.keys() if (self._log_metric_keys is None) or (k in self._log_metric_keys)]
         for key in keys_to_log:
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
             extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
             self._episode_sums[key][env_ids] = 0.0
-        # Also log overall episodic return
         if hasattr(self, "_episode_return"):
             episodic_return_avg = torch.mean(self._episode_return[env_ids])
             extras["Episode/Return"] = episodic_return_avg / self.max_episode_length_s
@@ -827,77 +671,47 @@ class FallRecoveryEnv(DirectRLEnv):
         return m_hat, c_hat, z_hat
 
 
-# ==============================================================================================
-# Observation Information
     def _build_o_t(self):
+        ang_vel_b = self._imu.data.ang_vel_b
+        proj_g_b = self._imu.data.projected_gravity_b
+        q = self._robot.data.joint_pos
+        qd = self._robot.data.joint_vel
+        a_prev = self._previous_actions
 
-        # Use IMU for ω and g as in paper
-        ang_vel_b = self._imu.data.ang_vel_b                      # (N,3)
-        proj_g_b  = self._imu.data.projected_gravity_b            # (N,3)
-        q         = self._robot.data.joint_pos                    # (N,12)
-        qd        = self._robot.data.joint_vel                    # (N,12)
-        a_prev    = self._previous_actions                   # (N,12)  << a_{t-1}
-
-        # Additional body-awareness features
-        root_state = self._robot.data.root_state_w               # (N,13)
+        root_state = self._robot.data.root_state_w
         base_height = root_state[:, 2:3]
         base_roll, base_pitch, _ = math_utils.euler_xyz_from_quat(self._robot.data.root_quat_w)
         base_roll = base_roll.unsqueeze(-1)
         base_pitch = base_pitch.unsqueeze(-1)
 
-        # Contact features (base + limbs) -> 13 dims
-        contact_13 = self._get_true_contact_13()                  # (N,13)
+        contact_13 = self._get_true_contact_13()
 
-        # Ensure augmented observation dimension (42 + 1 + 2 + 13 = 58)
         return torch.cat([ang_vel_b, proj_g_b, q, qd, a_prev,
-                          base_height, base_roll, base_pitch, contact_13], dim=-1) 
-#===============================================================================================
-# Priviledge Information for the Critic Network
-# [obs, h_t, m_t, K_pd, p_com, c_t, c_f, mu]
+                          base_height, base_roll, base_pitch, contact_13], dim=-1)
 
     def _get_privileged_observation(self):
-        # get state s_t
-        o_t = self._build_o_t()                            # (N,42)
-        #h_t = self._get_height_scan_flat()                 # (N,187)
-        #m_t = self._get_true_mass_distribution()           # (N,4)
-        #kPD = self._get_pd_gains_24()                      # (N,24)
-        pcom = self._get_com_xy()                          # (N,2)
-        c_t = self._get_true_contact_13()                  # (N,13)
-        c_f = self._get_foot_contact_forces_4()            # (N,4)
-        #mu  = self._get_friction_coeff()                   # (N,1)
-        return torch.cat([o_t,pcom, c_t, c_f], dim=-1)
+        o_t = self._build_o_t()
+        pcom = self._get_com_xy()
+        c_t = self._get_true_contact_13()
+        c_f = self._get_foot_contact_forces_4()
+        return torch.cat([o_t, pcom, c_t, c_f], dim=-1)
 
 
-    def _get_pd_gains_24(self):  
-        # per-joint kp,kd (12 + 12 = 24)  (K_pd)
-        kp = self._robot.data.joint_stiffness  # (N,12)
-        kd = self._robot.data.joint_damping    # (N,12)
-        return torch.cat([kp, kd], dim=-1)
-    
-    def _get_friction_coeff(self):
-        # Terrain / material friction if accessible; else a constant tensor  (mu)
-        mu = getattr(self._terrain, "friction_coefficient", 0.8)
-        return torch.full((self.num_envs, 1), float(mu), device=self.device)
-    
     def _get_com_xy(self):
-        # center of mass projected to world XY (approx via root state) (p_com)
-        # For better accuracy, use articulated CoM if available:
         try:
-            com_w = self._robot.data.com_pos_w  # (N,3)
+            com_w = self._robot.data.com_pos_w
         except:
             com_w = self._robot.data.root_state_w[:, :3]
-        return com_w[:, :2]  # (N,2)
+        return com_w[:, :2]
 
     def _get_foot_contact_forces_4(self):
-        # contact forces at the feet (4) (c_f)
         feet_ids, _ = self._contact_sensor.find_bodies(".*foot")
-        F = self._contact_sensor.data.net_forces_w[:, feet_ids, 2]  # vertical; (N,4)
-        return torch.abs(F) 
+        F = self._contact_sensor.data.net_forces_w[:, feet_ids, 2]
+        return torch.abs(F)
     
     def _get_true_contact_13(self):
-        # 13 = base + 4*(hip, thigh, calf); binary contacts (c_t)
-        netF = self._contact_sensor.data.net_forces_w  # (N, bodies, 3)
-        force_mag = torch.linalg.norm(netF, dim=-1)    # (N, bodies)
+        netF = self._contact_sensor.data.net_forces_w
+        force_mag = torch.linalg.norm(netF, dim=-1)
         contact = (force_mag > 1.0).float()
 
         names = self._robot.body_names
@@ -909,15 +723,8 @@ class FallRecoveryEnv(DirectRLEnv):
             mask("hip") & mask("LH"), mask("thigh") & mask("LH"), mask("calf") & mask("LH"),
             mask("hip") & mask("RH"), mask("thigh") & mask("RH"), mask("calf") & mask("RH"),
         ]
-        outs = [ (contact * m).max(dim=1, keepdim=True)[0] for m in masks ]
-        return torch.cat(outs, dim=-1)  # (N,13)
-    
-    def _get_height_scan_flat(self):
-        # Ray hits z: (N, R) -> clamp/resize to 187 points (h_t)
-        height_data = ( self._height_scanner.data.pos_w[:, 2].unsqueeze(1) - self._height_scanner.data.ray_hits_w[..., 2] - 0.5)
-        height_data = torch.nan_to_num(height_data, nan=0.0, posinf=1.0, neginf=-1.0)
-        height_data = height_data.clip(-1.0, 1.0)
-        return height_data
+        outs = [(contact * m).max(dim=1, keepdim=True)[0] for m in masks]
+        return torch.cat(outs, dim=-1)
     
     def _init_mass_group_indices(self):
         """Cache body index tensors (on self.device) for [base, hip, thigh, calf]."""
