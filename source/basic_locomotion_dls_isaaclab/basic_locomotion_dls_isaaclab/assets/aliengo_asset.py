@@ -57,6 +57,39 @@ ALIENGO_CALF_ACTUATOR_CFG = IdentifiedActuatorElectricCfg(
 )
 
 
+# ALIENGO_CFG = ArticulationCfg(
+#     prim_path=None,
+#     spawn=sim_utils.UsdFileCfg(
+#         usd_path=f"{ISAAC_ASSET_DIR}/aliengo_asset/from_xml/aliengo.usd",
+#         activate_contact_sensors=True,
+#         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+#             disable_gravity=False,
+#             retain_accelerations=False,
+#             linear_damping=0.0,
+#             angular_damping=0.0,
+#             max_linear_velocity=1000.0,
+#             max_angular_velocity=1000.0,
+#             max_depenetration_velocity=1.0,
+#         ),
+#         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+#             enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+#         ),
+#     ),
+#     init_state=ArticulationCfg.InitialStateCfg(
+#         pos=(0.0, 0.0, 0.4),
+#         joint_pos={
+#             ".*L_hip_joint": 0.0,
+#             ".*R_hip_joint": 0.0,
+#             ".*_thigh_joint": 0.9,
+#             ".*_calf_joint": -1.8,
+#         },
+#         joint_vel={".*": 0.0},
+#     ),
+
+#     actuators={"hip": ALIENGO_HIP_ACTUATOR_CFG, "thigh": ALIENGO_THIGH_ACTUATOR_CFG, "calf": ALIENGO_CALF_ACTUATOR_CFG},
+#     soft_joint_pos_limit_factor=0.95,
+# )
+
 ALIENGO_CFG = ArticulationCfg(
     prim_path=None,
     spawn=sim_utils.UsdFileCfg(
@@ -72,20 +105,24 @@ ALIENGO_CFG = ArticulationCfg(
             max_depenetration_velocity=1.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+            enabled_self_collisions=True,
+            solver_position_iteration_count=4,
+            solver_velocity_iteration_count=0,
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.4),
+        pos=(0.0, 0.0, 0.25),              # a little closer to the ground
+        rot=(1.0, 0.0, 0.0, 0.0),          # 180 deg around X -> upside down (x,y,z,w)
         joint_pos={
-            ".*L_hip_joint": 0.0,
-            ".*R_hip_joint": 0.0,
-            ".*_thigh_joint": 0.9,
-            ".*_calf_joint": -1.8,
+                ".*L_hip_joint":  0.0,
+                ".*R_hip_joint":  0.0,
+                ".*_thigh_joint": 0.9,
+                ".*_calf_joint": -1.8,   # ✅ inside [-2.775, -0.646]
         },
         joint_vel={".*": 0.0},
+        lin_vel=(0.0, 0.0, 0.0),
+        ang_vel=(0.0, 0.0, 0.0),
     ),
-
     actuators={"hip": ALIENGO_HIP_ACTUATOR_CFG, "thigh": ALIENGO_THIGH_ACTUATOR_CFG, "calf": ALIENGO_CALF_ACTUATOR_CFG},
     soft_joint_pos_limit_factor=0.95,
 )

@@ -1,0 +1,48 @@
+FROM isaac-lab-base:latest
+
+# setup environment
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Common base setup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg lsb-release locales git-lfs \
+  && locale-gen en_US.UTF-8 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Utils
+RUN apt-get update
+RUN apt-get install -y git wget nano \
+                       sudo gawk vim \
+                       iputils-ping ssh \
+                       byobu \
+                       software-properties-common \
+                       micro curl apt-transport-https tmux \
+                       ca-certificates gnupg2 cmake     
+
+# Dependencies 
+RUN apt-get install -y python3-opencv \
+                       python3-dev ninja-build \
+	                   dirmngr build-essential \
+                       python3-pip \
+                       python3-yaml \
+                       python3-tk \
+                       python3-venv \ 
+                       gnupg \
+                       libbullet-dev \
+                       libpython3-dev \
+                       python3-flake8 \
+                       python3-pytest-cov
+
+WORKDIR /workspace
+RUN git clone https://github.com/git-gfischer/RL_Quadruped_Fall_Recovery.git
+RUN cd basic-locomotion-dls-isaaclab && \
+    python3 -m pip install -e source/basic_locomotion_dls_isaaclab
+
+# Install Morphological Symmetries
+
+
+# Install Adversarial Motion Priors
+
+entrypoint ["/bin/bash"]
