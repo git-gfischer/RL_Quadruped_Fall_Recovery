@@ -6,14 +6,14 @@ For easy installation of all dependecies of the project, run the following comma
 ```
 git clone https://github.com/git-gfischer/RL_Quadruped_Fall_Recovery.git
 cd RL_Quadruped_Fall_Recovery
-docker build -t isaaclab_dls .
+docker build -f docker/dockerfile -t isaaclab_dls .
 ```
 
 ## Enter the docker 
 Once the docker image is built, enter the docker using docker compose
 ```
 xhost +
-docker compose -f docker/docker-compose.yaml run isaaclab bash
+docker compose -f docker/docker-compose.yaml run isaaclab
 python3 -m pip install -e source/basic_locomotion_dls_isaaclab
 ```
 

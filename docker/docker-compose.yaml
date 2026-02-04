@@ -3,12 +3,9 @@ services:
     image: isaaclab_dls:latest
     container_name: isaaclab
     network_mode: host
-    entrypoint: ["/bin/bash"]
     ipc: host
     pid: host
     privileged: true
-    runtime: nvidia
-    gpus: all
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
@@ -17,8 +14,13 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../../basic-locomotion-dls-isaaclab:/workspace/basic-locomotion-dls-isaaclab
-    devices:
-      - /dev/input/js1
     stdin_open: true   # like -i
     tty: true          # like -t
     restart: "no"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,4 +1,6 @@
-FROM isaac-lab-base:latest
+#FROM isaac-lab-base:latest
+FROM nvcr.io/nvidia/isaac-lab:2.3.2
+
 
 # setup environment
 ENV LANG=C.UTF-8
@@ -37,12 +39,12 @@ RUN apt-get install -y python3-opencv \
 
 WORKDIR /workspace
 RUN git clone https://github.com/git-gfischer/RL_Quadruped_Fall_Recovery.git
-RUN cd basic-locomotion-dls-isaaclab && \
-    python3 -m pip install -e source/basic_locomotion_dls_isaaclab
+#RUN cd basic-locomotion-dls-isaaclab && \
+#    python3 -m pip install -e source/basic_locomotion_dls_isaaclab
 
 # Install Morphological Symmetries
 
 
 # Install Adversarial Motion Priors
 
-entrypoint ["/bin/bash"]
+ENTRYPOINT ["/bin/bash"]
