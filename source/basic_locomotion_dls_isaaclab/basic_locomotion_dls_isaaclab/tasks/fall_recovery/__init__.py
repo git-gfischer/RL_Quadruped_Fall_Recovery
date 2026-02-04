@@ -18,7 +18,7 @@ from .fall_recovery_env import FallRecoveryEnv
 
 
 # Aliengo environments
-from .fall_recovery_env import AliengoFlatEnvCfg, AliengoRoughVisionEnvCfg, AliengoRoughBlindEnvCfg
+from .fall_recovery_env import AliengoFlatEnvCfg #, AliengoRoughVisionEnvCfg, AliengoRoughBlindEnvCfg
 
 gym.register(
     id="Recovery-Aliengo-Flat",

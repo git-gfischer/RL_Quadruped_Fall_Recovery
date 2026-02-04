@@ -16,7 +16,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, RayCaster, Imu
 
 from .aliengo_env_cfg import AliengoFlatEnvCfg
-from .modules.mcp import MCP, MCPDims, MCPDataset
+#from .modules.mcp import MCP, MCPDims, MCPDataset
 from .modules.spawner import QuadrupedSpawner
 
 class FallRecoveryEnv(DirectRLEnv):
@@ -68,13 +68,13 @@ class FallRecoveryEnv(DirectRLEnv):
 
 
         # MCP buffers & net
-        self._mcp_dims = MCPDims(o_dim=self.cfg.single_o_dim, m_dim=4, c_dim=13, z_dim=self.cfg.mcp_latent_dim, H=self.cfg.mcp_history)
-        if self.cfg.use_mcp:
-            self._mcp = MCP(self._mcp_dims).to(self.device)
-            self._mcp.dataset = MCPDataset(max_size=400_000, device=self.device)
-            self._mcp_opt = torch.optim.Adam(self._mcp.parameters(), lr=self.cfg.mcp_lr)
-            # [N, H, 42]
-            self._o_hist = torch.zeros(self.num_envs, self._mcp_dims.H, self._mcp_dims.o_dim, device=self.device)
+        # self._mcp_dims = MCPDims(o_dim=self.cfg.single_o_dim, m_dim=4, c_dim=13, z_dim=self.cfg.mcp_latent_dim, H=self.cfg.mcp_history)
+        # if self.cfg.use_mcp:
+        #     self._mcp = MCP(self._mcp_dims).to(self.device)
+        #     self._mcp.dataset = MCPDataset(max_size=400_000, device=self.device)
+        #     self._mcp_opt = torch.optim.Adam(self._mcp.parameters(), lr=self.cfg.mcp_lr)
+        #     # [N, H, 42]
+        #     self._o_hist = torch.zeros(self.num_envs, self._mcp_dims.H, self._mcp_dims.o_dim, device=self.device)
 
         self.quad_spawner = QuadrupedSpawner(device=self.device, 
                                              env_origins=self._terrain.env_origins, 
@@ -82,12 +82,12 @@ class FallRecoveryEnv(DirectRLEnv):
                                              default_joint_pos=self._robot.data.default_joint_pos, 
                                              default_joint_vel=self._robot.data.default_joint_vel)
 
-        load_path = getattr(self.cfg, "mcp_load_path", "")
-        if load_path:
-            ckpt = torch.load(load_path, map_location=self.device)
-            self._mcp.load_state_dict(ckpt["state_dict"])
-            if "opt_state" in ckpt:
-                self._mcp_opt.load_state_dict(ckpt["opt_state"])
+        # load_path = getattr(self.cfg, "mcp_load_path", "")
+        # if load_path:
+        #     ckpt = torch.load(load_path, map_location=self.device)
+        #     self._mcp.load_state_dict(ckpt["state_dict"])
+        #     if "opt_state" in ckpt:
+        #         self._mcp_opt.load_state_dict(ckpt["opt_state"])
 
 
     def _setup_scene(self):
@@ -481,8 +481,8 @@ class FallRecoveryEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(jp, jv, None, env_ids)
 
         # Reset MCP caches (only when MCP enabled)
-        if self.cfg.use_mcp:
-            self._o_hist[env_ids] = 0.0
+        # if self.cfg.use_mcp:
+        #     self._o_hist[env_ids] = 0.0
 
         # Reset reference point for body-bias term (used in rewards)
         if hasattr(self, "_init_root_xy"):
@@ -520,155 +520,155 @@ class FallRecoveryEnv(DirectRLEnv):
         self.extras["log"].update(extras)
 
 
-    def _get_mcp_features(self, clock_data=None):
-        """
-        Online MCP (mass/contact predictor) like your concurrent state estimator:
-        - Uses history of proprio (H * o_dim)
-        - Predicts (m_hat, c_hat, z_hat)
-        - Adds supervised sample to dataset with privileged labels
-        - Trains periodically inside this call (grad-safe)
-        Returns:
-            m_hat: (N, 4)    mass-group distribution
-            c_hat: (N, 13)   contact indicator vector
-            z_hat: (N, zdim) latent
-        """
-        if not getattr(self.cfg, "use_mcp", False):
-            N = self.num_envs
-            zdim = int(getattr(self.cfg, "mcp_latent_dim", 16))
-            return (torch.zeros(N, 4, device=self.device),
-                    torch.zeros(N, 13, device=self.device),
-                    torch.zeros(N, zdim, device=self.device))
+    # def _get_mcp_features(self, clock_data=None):
+    #     """
+    #     Online MCP (mass/contact predictor) like your concurrent state estimator:
+    #     - Uses history of proprio (H * o_dim)
+    #     - Predicts (m_hat, c_hat, z_hat)
+    #     - Adds supervised sample to dataset with privileged labels
+    #     - Trains periodically inside this call (grad-safe)
+    #     Returns:
+    #         m_hat: (N, 4)    mass-group distribution
+    #         c_hat: (N, 13)   contact indicator vector
+    #         z_hat: (N, zdim) latent
+    #     """
+    #     if not getattr(self.cfg, "use_mcp", False):
+    #         N = self.num_envs
+    #         zdim = int(getattr(self.cfg, "mcp_latent_dim", 16))
+    #         return (torch.zeros(N, 4, device=self.device),
+    #                 torch.zeros(N, 13, device=self.device),
+    #                 torch.zeros(N, zdim, device=self.device))
 
-        # -------------- Hyperparams (cfg with sensible defaults) --------------
-        H        = int(getattr(self.cfg, "mcp_history", 5))
-        o_dim    = int(getattr(self.cfg, "single_o_dim", 58))
-        z_dim    = int(getattr(self.cfg, "mcp_latent_dim", 16))
-        # training cadence in *steps* (not episodes)
-        train_every_steps = int(getattr(self.cfg, "mcp_train_every_steps", 240))  # ~10 Hz if dt=0.04
-        min_buffer        = int(getattr(self.cfg, "mcp_min_buffer", 4096))
-        batch_size        = int(getattr(self.cfg, "mcp_batch_size", 2048))
-        lr                = float(getattr(self.cfg, "mcp_lr", 1e-3))
-        warmup_steps      = int(getattr(self.cfg, "mcp_warmup_steps", 1000))
-        # loss weights
-        lam_m   = float(getattr(self.cfg, "mcp_lambda_m",   1.0))
-        lam_c   = float(getattr(self.cfg, "mcp_lambda_c",   1.0))
-        lam_rec = float(getattr(self.cfg, "mcp_lambda_rec", 1.0))
-        lam_kl  = float(getattr(self.cfg, "mcp_lambda_kl",  1e-3))
+    #     # -------------- Hyperparams (cfg with sensible defaults) --------------
+    #     H        = int(getattr(self.cfg, "mcp_history", 5))
+    #     o_dim    = int(getattr(self.cfg, "single_o_dim", 58))
+    #     z_dim    = int(getattr(self.cfg, "mcp_latent_dim", 16))
+    #     # training cadence in *steps* (not episodes)
+    #     train_every_steps = int(getattr(self.cfg, "mcp_train_every_steps", 240))  # ~10 Hz if dt=0.04
+    #     min_buffer        = int(getattr(self.cfg, "mcp_min_buffer", 4096))
+    #     batch_size        = int(getattr(self.cfg, "mcp_batch_size", 2048))
+    #     lr                = float(getattr(self.cfg, "mcp_lr", 1e-3))
+    #     warmup_steps      = int(getattr(self.cfg, "mcp_warmup_steps", 1000))
+    #     # loss weights
+    #     lam_m   = float(getattr(self.cfg, "mcp_lambda_m",   1.0))
+    #     lam_c   = float(getattr(self.cfg, "mcp_lambda_c",   1.0))
+    #     lam_rec = float(getattr(self.cfg, "mcp_lambda_rec", 1.0))
+    #     lam_kl  = float(getattr(self.cfg, "mcp_lambda_kl",  1e-3))
 
-        # -------------- Lazy init --------------
-        if not hasattr(self, "_mcp"):
-            from basic_locomotion_dls_isaaclab.tasks.fall_recovery.modules.mcp import MCP, MCPDataset, MCPDims
-            dims = MCPDims(o_dim=o_dim, m_dim=4, c_dim=13, z_dim=z_dim, H=H)
-            self._mcp = MCP(dims).to(self.device)
-            self._mcp.dataset = MCPDataset(max_size=int(getattr(self.cfg, "mcp_buffer_size", 200_000)),
-                                        device=self.device)
-            self._mcp_opt = torch.optim.Adam(self._mcp.parameters(), lr=lr)
+    #     # -------------- Lazy init --------------
+    #     if not hasattr(self, "_mcp"):
+    #         from basic_locomotion_dls_isaaclab.tasks.fall_recovery.modules.mcp import MCP, MCPDataset, MCPDims
+    #         dims = MCPDims(o_dim=o_dim, m_dim=4, c_dim=13, z_dim=z_dim, H=H)
+    #         self._mcp = MCP(dims).to(self.device)
+    #         self._mcp.dataset = MCPDataset(max_size=int(getattr(self.cfg, "mcp_buffer_size", 200_000)),
+    #                                     device=self.device)
+    #         self._mcp_opt = torch.optim.Adam(self._mcp.parameters(), lr=lr)
 
-        if not hasattr(self, "_o_hist"):
-            self._o_hist = torch.zeros(self.num_envs, H, o_dim, device=self.device)
-        if not hasattr(self, "_last_o_hist_flat"):
-            self._last_o_hist_flat = torch.zeros(self.num_envs, H * o_dim, device=self.device)
-        if not hasattr(self, "_last_m_true"):
-            self._last_m_true = torch.zeros(self.num_envs, 4, device=self.device)
-        if not hasattr(self, "_last_c_true"):
-            self._last_c_true = torch.zeros(self.num_envs, 13, device=self.device)
+    #     if not hasattr(self, "_o_hist"):
+    #         self._o_hist = torch.zeros(self.num_envs, H, o_dim, device=self.device)
+    #     if not hasattr(self, "_last_o_hist_flat"):
+    #         self._last_o_hist_flat = torch.zeros(self.num_envs, H * o_dim, device=self.device)
+    #     if not hasattr(self, "_last_m_true"):
+    #         self._last_m_true = torch.zeros(self.num_envs, 4, device=self.device)
+    #     if not hasattr(self, "_last_c_true"):
+    #         self._last_c_true = torch.zeros(self.num_envs, 13, device=self.device)
 
-        # -------------- Build current proprio and update history --------------
-        # Use your existing builder (same vector you pass to policy’s o_t part)
-        o_t = self._build_o_t()  # (N, o_dim)
+    #     # -------------- Build current proprio and update history --------------
+    #     # Use your existing builder (same vector you pass to policy’s o_t part)
+    #     o_t = self._build_o_t()  # (N, o_dim)
 
-        # shift left, append newest
-        self._o_hist = torch.cat([self._o_hist[:, 1:, :], o_t.unsqueeze(1)], dim=1)  # (N,H,o)
-        o_hist_flat  = self._o_hist.reshape(self.num_envs, -1)                        # (N,H*o)
+    #     # shift left, append newest
+    #     self._o_hist = torch.cat([self._o_hist[:, 1:, :], o_t.unsqueeze(1)], dim=1)  # (N,H,o)
+    #     o_hist_flat  = self._o_hist.reshape(self.num_envs, -1)                        # (N,H*o)
 
-        # -------------- Dataset add: (o_hist_{t-1} -> o_t) with privileged labels --------------
-        if self.common_step_counter > 0 and self._mcp.dataset is not None:
-            self._mcp.dataset.add(
-                o_hist=self._last_o_hist_flat,
-                o_next=o_t,
-                m_true=self._last_m_true,
-                c_true=self._last_c_true,
-            )
+    #     # -------------- Dataset add: (o_hist_{t-1} -> o_t) with privileged labels --------------
+    #     if self.common_step_counter > 0 and self._mcp.dataset is not None:
+    #         self._mcp.dataset.add(
+    #             o_hist=self._last_o_hist_flat,
+    #             o_next=o_t,
+    #             m_true=self._last_m_true,
+    #             c_true=self._last_c_true,
+    #         )
 
-        # cache labels for next step
-        self._last_o_hist_flat = o_hist_flat.detach()
-        self._last_m_true = self._get_true_mass_distribution().detach()  # (N,4)
-        self._last_c_true = self._get_true_contact_13().detach()         # (N,13)
+    #     # cache labels for next step
+    #     self._last_o_hist_flat = o_hist_flat.detach()
+    #     self._last_m_true = self._get_true_mass_distribution().detach()  # (N,4)
+    #     self._last_c_true = self._get_true_contact_13().detach()         # (N,13)
 
-        # -------------- Prediction (no grad during rollout) --------------
-        if self.common_step_counter >= warmup_steps:
-            with torch.no_grad():
-                m_hat, c_hat, z_hat, _ = self._mcp(o_hist_flat)  # (N,4),(N,13),(N,z)
-        else:
-            N = self.num_envs
-            m_hat = torch.zeros(N, 4, device=self.device)
-            c_hat = torch.zeros(N, 13, device=self.device)
-            z_hat = torch.zeros(N, z_dim, device=self.device)
+    #     # -------------- Prediction (no grad during rollout) --------------
+    #     if self.common_step_counter >= warmup_steps:
+    #         with torch.no_grad():
+    #             m_hat, c_hat, z_hat, _ = self._mcp(o_hist_flat)  # (N,4),(N,13),(N,z)
+    #     else:
+    #         N = self.num_envs
+    #         m_hat = torch.zeros(N, 4, device=self.device)
+    #         c_hat = torch.zeros(N, 13, device=self.device)
+    #         z_hat = torch.zeros(N, z_dim, device=self.device)
 
-        # -------------- Periodic training (inside this function) --------------
-        ds = self._mcp.dataset
-        train_enabled = bool(getattr(self.cfg, "mcp_train_enabled", True))
-        if (train_enabled
-            and ds is not None
-            and isinstance(len(ds), int)  # quiet type checkers
-            and len(ds) >= min_buffer
-            and (int(self.common_step_counter) % train_every_steps == 0)):
-            # Escape any outer inference/no_grad so autograd works
-            import torch as _torch
-            with _torch.inference_mode(False):
-                with _torch.enable_grad():
-                    batch = self._mcp.dataset.sample(batch_size)
-                    weights = {"lambda_m": lam_m, "lambda_c": lam_c, "lambda_rec": lam_rec, "lambda_kl": lam_kl}
-                    logs = self._mcp.train_step(batch, weights, self._mcp_opt)
-                    # lightweight logging
-                    self.extras.setdefault("log", {}).update({f"MCP/{k}": v.item() for k, v in logs.items()})
-                    # Save best model by total loss
-                    if train_enabled:
-                        try:
-                            curr_loss = float(logs.get("loss", 1e9))
-                            best = getattr(self, "_mcp_best_loss", None)
-                            if (best is None) or (curr_loss < best):
-                                setattr(self, "_mcp_best_loss", curr_loss)
-                                save_root_best = getattr(self.cfg, "log_dir", None)
-                                best_dir = os.path.join(save_root_best, "mcp") if isinstance(save_root_best, str) and len(save_root_best) > 0 else "logs/mcp"
-                                os.makedirs(best_dir, exist_ok=True)
-                                best_path = os.path.join(best_dir, "mcp_best.pth")
-                                torch.save({
-                                    "state_dict": self._mcp.state_dict(),
-                                    "opt_state": self._mcp_opt.state_dict(),
-                                    "best_loss": curr_loss,
-                                    "dims": {"H": H, "o_dim": o_dim, "z_dim": z_dim}
-                                }, best_path)
-                                print(f"[INFO] MCP: saving best checkpoint: {best_path} (loss={curr_loss:.5f})")
-                                self.extras.setdefault("log", {})["MCP/best_ckpt"] = best_path
-                        except Exception:
-                            pass
+    #     # -------------- Periodic training (inside this function) --------------
+    #     ds = self._mcp.dataset
+    #     train_enabled = bool(getattr(self.cfg, "mcp_train_enabled", True))
+    #     if (train_enabled
+    #         and ds is not None
+    #         and isinstance(len(ds), int)  # quiet type checkers
+    #         and len(ds) >= min_buffer
+    #         and (int(self.common_step_counter) % train_every_steps == 0)):
+    #         # Escape any outer inference/no_grad so autograd works
+    #         import torch as _torch
+    #         with _torch.inference_mode(False):
+    #             with _torch.enable_grad():
+    #                 batch = self._mcp.dataset.sample(batch_size)
+    #                 weights = {"lambda_m": lam_m, "lambda_c": lam_c, "lambda_rec": lam_rec, "lambda_kl": lam_kl}
+    #                 logs = self._mcp.train_step(batch, weights, self._mcp_opt)
+    #                 # lightweight logging
+    #                 self.extras.setdefault("log", {}).update({f"MCP/{k}": v.item() for k, v in logs.items()})
+    #                 # Save best model by total loss
+    #                 if train_enabled:
+    #                     try:
+    #                         curr_loss = float(logs.get("loss", 1e9))
+    #                         best = getattr(self, "_mcp_best_loss", None)
+    #                         if (best is None) or (curr_loss < best):
+    #                             setattr(self, "_mcp_best_loss", curr_loss)
+    #                             save_root_best = getattr(self.cfg, "log_dir", None)
+    #                             best_dir = os.path.join(save_root_best, "mcp") if isinstance(save_root_best, str) and len(save_root_best) > 0 else "logs/mcp"
+    #                             os.makedirs(best_dir, exist_ok=True)
+    #                             best_path = os.path.join(best_dir, "mcp_best.pth")
+    #                             torch.save({
+    #                                 "state_dict": self._mcp.state_dict(),
+    #                                 "opt_state": self._mcp_opt.state_dict(),
+    #                                 "best_loss": curr_loss,
+    #                                 "dims": {"H": H, "o_dim": o_dim, "z_dim": z_dim}
+    #                             }, best_path)
+    #                             print(f"[INFO] MCP: saving best checkpoint: {best_path} (loss={curr_loss:.5f})")
+    #                             self.extras.setdefault("log", {})["MCP/best_ckpt"] = best_path
+    #                     except Exception:
+    #                         pass
 
 
-        # -------------- Optional: periodic checkpoint --------------
-        save_every = int(getattr(self.cfg, "mcp_save_every_steps", 10000))
-        # Prefer task log_dir if provided (e.g., set by runner), else fallback
-        save_root = getattr(self.cfg, "log_dir", None)
-        default_dir = "logs/mcp"
-        save_dir   = os.path.join(save_root, "mcp") if isinstance(save_root, str) and len(save_root) > 0 else default_dir
-        if train_enabled and save_every > 0 and (int(self.common_step_counter) % save_every == 0):
-            print("saving MCP model at step", int(self.common_step_counter))
-            os.makedirs(save_dir, exist_ok=True)
-            ckpt_path = os.path.join(save_dir, f"mcp_step_{int(self.common_step_counter):08d}.pth")
-            torch.save({"state_dict": self._mcp.state_dict(),
-                        "opt_state": self._mcp_opt.state_dict(),
-                        "dims": {"H": H, "o_dim": o_dim, "z_dim": z_dim}}, ckpt_path)
-            # lightweight breadcrumb in extras
-            self.extras.setdefault("log", {})["MCP/last_ckpt"] = ckpt_path
-        # Throttled MCP stats to log structure (no prints per step)
-        if int(self.common_step_counter) % (10 * train_every_steps) == 0:
-            self.extras.setdefault("log", {}).update({
-                "MCP/m_mean": m_hat.mean().item(),
-                "MCP/c_mean": c_hat.mean().item(),
-                "MCP/z_mean": z_hat.mean().item(),
-                "MCP/buffer_size": len(self._mcp.dataset) if self._mcp.dataset is not None else 0,
-            })
-        return m_hat, c_hat, z_hat
+    #     # -------------- Optional: periodic checkpoint --------------
+    #     save_every = int(getattr(self.cfg, "mcp_save_every_steps", 10000))
+    #     # Prefer task log_dir if provided (e.g., set by runner), else fallback
+    #     save_root = getattr(self.cfg, "log_dir", None)
+    #     default_dir = "logs/mcp"
+    #     save_dir   = os.path.join(save_root, "mcp") if isinstance(save_root, str) and len(save_root) > 0 else default_dir
+    #     if train_enabled and save_every > 0 and (int(self.common_step_counter) % save_every == 0):
+    #         print("saving MCP model at step", int(self.common_step_counter))
+    #         os.makedirs(save_dir, exist_ok=True)
+    #         ckpt_path = os.path.join(save_dir, f"mcp_step_{int(self.common_step_counter):08d}.pth")
+    #         torch.save({"state_dict": self._mcp.state_dict(),
+    #                     "opt_state": self._mcp_opt.state_dict(),
+    #                     "dims": {"H": H, "o_dim": o_dim, "z_dim": z_dim}}, ckpt_path)
+    #         # lightweight breadcrumb in extras
+    #         self.extras.setdefault("log", {})["MCP/last_ckpt"] = ckpt_path
+    #     # Throttled MCP stats to log structure (no prints per step)
+    #     if int(self.common_step_counter) % (10 * train_every_steps) == 0:
+    #         self.extras.setdefault("log", {}).update({
+    #             "MCP/m_mean": m_hat.mean().item(),
+    #             "MCP/c_mean": c_hat.mean().item(),
+    #             "MCP/z_mean": z_hat.mean().item(),
+    #             "MCP/buffer_size": len(self._mcp.dataset) if self._mcp.dataset is not None else 0,
+    #         })
+    #     return m_hat, c_hat, z_hat
 
 
     def _build_o_t(self):

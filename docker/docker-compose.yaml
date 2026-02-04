@@ -13,7 +13,8 @@ services:
       - PRIVACY_CONSENT=Y
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ../../basic-locomotion-dls-isaaclab:/workspace/basic-locomotion-dls-isaaclab
+      - ..:/workspace/RL_Quadruped_Fall_Recovery
+      #- ../../basic-locomotion-dls-isaaclab:/workspace/basic-locomotion-dls-isaaclab
     stdin_open: true   # like -i
     tty: true          # like -t
     restart: "no"
